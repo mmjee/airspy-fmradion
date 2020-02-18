@@ -232,3 +232,4 @@ modules.xml
 .idea/sonarlint
 
 # End of https://www.gitignore.io/api/cmake,intellij+all
+dockcross*
