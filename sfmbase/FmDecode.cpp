@@ -333,9 +333,9 @@ void FmDecoder::process(const IQSampleVector &samples_in, SampleVector &audio) {
     m_pilotpll.process(m_buf_baseband, m_buf_rawstereo, m_pilot_shift);
 
     // Force-set this flag to true to measure stereo PLL phase noise
-    // m_stereo_detected = true;
+    m_stereo_detected = true;
     // Use locked flag for the normal use
-    m_stereo_detected = m_pilotpll.locked();
+    // m_stereo_detected = m_pilotpll.locked();
 
     // Demodulate stereo signal.
     demod_stereo(m_buf_baseband, m_buf_rawstereo);
