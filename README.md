@@ -2,17 +2,27 @@
 
 # airspy-fmradion
 
-* Version v0.8.4-pre0, 4-JAN-2020
+* Version 20201025-0
 * For MacOS and Linux
 
 ### Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the details.
 
+### No more semantic versioning
+
+The semantic versioning scheme of airspy-fmradion has utterly failed.
+
+New version number scheme: YYYYMMDD-N (N: subnumber, starting from 0, unsigned integer)
+
 ### Known issues and changes
 
+* PortAudio is required since Version 20201023-0. Use PortAudio v19. Former ALSA output driver is replaced by more versatile PortAudio driver, which is compatible both for Linux and macOS.
 * libvolk is required since v0.8.0. If you don't want to install libvolk, use v0.7.8 instead. Use the latest master branch of libvolk. Configure the `volk_config` file with `volk_profile -b` for the maximum performance. See [INSTALL-latest-libvolk.md](INSTALL-latest-libvolk.md) for the details.
 * Building on MacOS 10.15 Catalina is still not tested yet. The development is going on with the last Mojave 10.14.6.
+* For Raspberry Pi 3 and 4, Airspy R2 10Mbps and Airspy Mini 6Mbps sampling rates are *not supported* due to the hardware limitation. Use in 2.5Mbps for R2, 3Mbps for Mini.
+* v0.8.5 and the earlier versions set the compilation flag of `-ffast-math`, which disabled the processing of NaN. This will cause a latch-up bug when the multipath filter coefficients diverge. Removed `-ffast-math` for the stable operation.
+* v0.9.0-test1 to v0.9.5 had calculation error due to `volk_32f_expfast_32f()` in `IfAgc::process()` method. Fixed this by replacing to the more accurate calculation code of `volk_32f_exp_32f()`.
 
 ### What is airspy-fmradion?
 
@@ -32,8 +42,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the details.
 ```sh
 airspy-fmradion -t airspy -q \
     -c freq=88100000,srate=10000000,lgain=2,mgain=0,vgain=10 \
-    -b 1.0 -R - | \
-    play -t raw -esigned-integer -b16 -r 48000 -c 2 -q -
+    -b 1.0 -P -
 
 airspy-fmradion -t airspyhf -q \
     -c freq=88100000,srate=768000 \
@@ -57,6 +66,7 @@ airspy-fmradion -m am -t airspyhf -q \
  - [sox](http://sox.sourceforge.net/)
  - [The SoX Resampler library aka libsoxr](https://sourceforge.net/p/soxr/wiki/Home/)
  - [VOLK](http://libvolk.org/)
+ - [PortAudio](http://www.portaudio.com)
  - Tested: Airspy R2, Airspy Mini, Airspy HF+ Dual Port, RTL-SDR V3
  - Fast computer
  - Medium-strong FM and/or AM radio signals, or DSB/USB/LSB/CW signals
@@ -68,7 +78,6 @@ For the latest version, see https://github.com/jj1bdx/airspy-fmradion
   - Official releases are tagged
   - _master_ is the "production" branch with the most stable release (often ahead of the latest release though)
   - _dev_ is the development branch that contains current developments that will be eventually released in the master branch
-  - _libvolk_ is the libvolk-specific development branch that might contain unstable test code of current developments ahead of the dev branch
   - Other branches are experimental (and presumably abandoned)
 
 ## Prerequisites
@@ -88,7 +97,7 @@ For example if you installed it in `/opt/install/libairspy` you have to add `-DA
 
 ### Debian/Ubuntu Linux
 
-  - `sudo apt-get install cmake pkg-config libusb-1.0-0-dev libasound2-dev libairspy-dev libairspyhf-dev librtlsdr-dev libsoxr-dev libsndfile1-dev`
+  - `sudo apt-get install cmake pkg-config libusb-1.0-0-dev libasound2-dev libairspy-dev libairspyhf-dev librtlsdr-dev libsoxr-dev libsndfile1-dev portaudio19-dev`
 
 ### macOS
 
@@ -100,6 +109,7 @@ For example if you installed it in `/opt/install/libairspy` you have to add `-DA
 brew tap pothosware/homebrew-pothos
 brew tap dholm/homebrew-sdr #other sdr apps
 brew update
+brew install portaudio
 brew install libsoxr
 brew install libsndfile
 brew install rtl-sdr
@@ -124,7 +134,9 @@ Use the latest HEAD version.
 
 #### libairspy
 
-*Use the latest libairspy --HEAD version* for:
+*Note: this is applicable for both macOS and Linux.*
+
+*Install and use the latest libairspy --HEAD version* for:
 
 * Working `airspy_open_devices()`, required by `airspy_open_sn()`. See [this commit](https://github.com/airspy/airspyone_host/commit/61fec20fbd710fc54d57dfec732d314d693b5a2f) for the details.
 * Proper transfer block size. `if_blocksize` for Airspy HF+ is reduced from 16384 to 2048, following [this commit](https://github.com/airspy/airspyhf/commit/a1f6f4a0537f53bede6e80c51826fc9d45061c28).
@@ -169,18 +181,42 @@ Compile and install
  - `-R filename` Write audio data as raw `S16_LE` samples. Use filename `-` to write to stdout
  - `-F filename` Write audio data as raw `FLOAT_LE` samples. Use filename `-` to write to stdout
  - `-W filename` Write audio data to .WAV file
- - `-P [device]` Play audio via ALSA device (default `default`). Use `aplay -L` to get the list of devices for your system
+ - `-P device_num` Play audio via PortAudio device index number. Use string `-` to specify the default PortAudio device
  - `-T filename` Write pulse-per-second timestamps. Use filename '-' to write to stdout
- - `-b seconds` Set audio buffer size in seconds
+ - `-b seconds` Set audio buffer size in seconds (default: 1 second)
  - `-X` Shift pilot phase (for Quadrature Multipath Monitor) (-X is ignored under mono mode (-M))
  - `-U` Set deemphasis to 75 microseconds (default: 50)
  - `-f` Set Filter type
-   - for FM: default: +-189kHz, medium: +-156kHz, narrow: +-121kHz
-   - for AM: default: +-6kHz, medium: +-4kHz, narrow: +-3kHz
+   - for FM: wide and default: none, medium: +-156kHz, narrow: +-121kHz
+   - for AM: wide: +-9kHz, default: +-6kHz, medium: +-4.5kHz, narrow: +-3kHz
+   - for NBFM: wide: +-20kHz, default: +-10kHz, medium: +-8kHz, narrow: +-6.25kHz
  - `-l dB` Enable IF squelch, set the level to minus given value of dB
  - `-E stages` Enable multipath filter for FM (For stable reception only: turn off if reception becomes unstable)
+ - `-r ppm` Set IF offset in ppm (range: +-1000000ppm) (Note: this option affects output pitch and timing: *use for the output timing compensation only!*
 
 ## Major changes
+
+### Rate compensation for adjusting audio device playback speed offset
+
+* Background: some audio devices shows non-negligible offset of playback speed, which causes eventual audio output buffer overflow and significant delay in long-term playback.
+* How to fix: compensating the playback speed offset gives more accurate playback timing, by sacrificing output audio pitch accuracy. A proper compensation will eliminate the cause of increasing output buffer length, by sending less data (lower sampling rate) to the conversion process.
+* You can specify the compensation rate by ppm using `-r` option.
+* How to estimate the rate offset: when elapsed playback time is `Tp` [seconds] and output buffer length (`buf=` in the debug output) increases during the time is `Ts` [seconds], the compensation rate is `(Ts/Tp) * 1000000` [ppm].
+* For example, if the output buffer length increases for 1 second after playing back for 7 hours (25200 seconds), the offset rate is 1/25200 * 1000000 ~= 39.68ppm.
+* +- 100ppm offset is not uncommon among the consumer-grade audio devices.
+* +- 100ppm pitch change may not be recongizable by human.
+
+#### Caveats for the rate compensation
+
+* *Do not use this feature if the per-sample accuracy is essential.*
+* *Do not use this feature for non-realtime output (for example, to files).*
+* Output audio pitch increases as the offset increases.
+* Too much compensation will cause output underflow.
+* This feature causes fractional (non-integer) resampling by `IfResampler` class, which causes more CPU usage.
+
+### Smaller latency
+
+* v0.9.2 uses smaller latency algorithms for all modulation types and filters. The output frequency characteristics may be different from the previous versions.
 
 ### Audio gain adjustment
 
@@ -193,6 +229,7 @@ Compile and install
 * Output of the stereo decoder is downsampled by libsoxr to 48kHz
 * Quality: `SOXR_VHQ`
 * 19kHz cut LPF implemented for post-processing libsoxr output
+* *Do not use* `SOXR_STEEP_FILTER` because it induces unacceptable higher latency
 
 ### Phase discriminator uses GNU Radio fast_atan2f() 
 
@@ -205,7 +242,7 @@ Compile and install
 
 ### FM multipath filter
 
-* An LMS-based multipath filter can be enabled after IF AGC
+* A Normalized LMS-based multipath filter can be enabled after IF AGC
 * IF sample stages can be defined by `-E` options
 * Reference amplitude level: 1.0
 * For Mac mini 2018 with 3.2 GHz Intel Core i7, 288 stages consume 99% of one CPU core
@@ -232,7 +269,6 @@ Compile and install
 
 * CIC filters for the IF 1st stage (unable to explore parallelism, too complex to compensate)
 * Using lock-free threads (`boost::lockfree::spsc_queue` didn't make things faster, and consumed x2 CPU power)
-* Fixed IF for FM to 384kHz did not increase the processing speed; the current variable IF design works well
 
 ## Filter design documentation
 
@@ -245,27 +281,33 @@ Compile and install
 
 * FM Filter coefficients are listed under `doc/filter-design`
 
-### For AM
+### For AM and DSB
 
 * AM Filter coefficients are listed under `doc/filter-design`
-* Max +-5.5kHz IF filter width without aliasing set for all IF filters
-* Narrower filters by `-f` options: `middle` +-4kHz, `narrow` +-3kHz
+* `default` filter width: +-6kHz
+* Narrower filters by `-f` options: `middle` +-4.5kHz, `narrow` +-3kHz
+* Wider filters by `-f` options: `wide` +-9kHz
 
 ### For SSB
 
-* Filter method applied by shifting 0 - 3kHz to 3 - 6kHz (when sampling frequency is 12kHz)
-* SSB filter: designed for 3 to 6kHz, BW 2.4kHz, from 3.3 to 5.7kHz
-* Use `-f narrow` option
+* Filter method applied by shifting 0 - 3kHz to 12 - 15kHz (when sampling frequency is 48kHz)
+* Applied fixed AM narrow filter option + 12kHz shifting up/down to remove the unnecessary sideband
 
 ### For CW
 
 * Pitch: 500Hz
 * Filter width: +- 250Hz
+* Uses downsampling to 12kHz for applying a steep filter
 
 ### For NBFM
 
-* Deviation: max +-8kHz
-* Output audio LPF: flat up to 3kHz
+* Deviation: normal +-8kHz, for wide +-17kHz
+* Output audio LPF: flat up to 4kHz
+* NBFM Filter coefficients are listed under `doc/filter-design`
+* `default` filter width: +-10kHz
+* Narrower filters by `-f` options: `middle` +-8kHz, `narrow` +-6.25kHz
+* Wider filters by `-f` options: `wide` +-20kHz (with wider deviation of +-17kHz)
+* Audio gain reduced by -3dB to prevent output clipping
 
 ## AM AGC
 
@@ -273,11 +315,14 @@ Compile and install
 * See <https://www.mathworks.com/help/comm/ref/comm.agc-system-object.html> for the implementation details
 * IF AGC: gain up to 100dB (100000)
 * Audio AGC: gain up to 7dB (5.0)
-* TODO: an audio level compression/limiting algorithm?
 
 ## FM AGC
 
 * IF AGC: gain up to 80dB (10000)
+
+## NBFM AGC
+
+* IF AGC: gain up to 100dB (100000)
 
 ## Airspy R2 / Mini modification from ngsoftfm-jj1bdx
 

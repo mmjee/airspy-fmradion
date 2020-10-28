@@ -23,46 +23,65 @@
 #include "AmDecode.h"
 #include "Utility.h"
 
+// class FineTuner
+
+// Construct finetuner.
+FineTuner::FineTuner(unsigned const int table_size, const int freq_shift)
+    : m_index(0), m_table(table_size) {
+  double phase_step = 2.0 * M_PI / double(table_size);
+  for (unsigned int i = 0; i < table_size; i++) {
+    double phi = (((int64_t)freq_shift * i) % table_size) * phase_step;
+    double pcos = cos(phi);
+    double psin = sin(phi);
+    m_table[i] = IQSample(pcos, psin);
+  }
+}
+
+// Process samples.
+void FineTuner::process(const IQSampleVector &samples_in,
+                        IQSampleVector &samples_out) {
+  unsigned int tblidx = m_index;
+  unsigned int tblsiz = m_table.size();
+  unsigned int n = samples_in.size();
+
+  samples_out.resize(n);
+
+  for (unsigned int i = 0; i < n; i++) {
+    samples_out[i] = samples_in[i] * m_table[tblidx];
+    tblidx++;
+    if (tblidx == tblsiz)
+      tblidx = 0;
+  }
+
+  m_index = tblidx;
+}
+
 // class AmDecoder
 
-AmDecoder::AmDecoder(double sample_rate_demod, IQSampleCoeff &amfilter_coeff,
-                     const ModType mode)
+AmDecoder::AmDecoder(IQSampleCoeff &amfilter_coeff, const ModType mode)
     // Initialize member fields
-    : m_sample_rate_demod(sample_rate_demod), m_amfilter_coeff(amfilter_coeff),
-      m_mode(mode), m_baseband_mean(0), m_baseband_level(0), m_if_rms(0.0)
-
-      // Construct AudioResampler
-      ,
-      m_audioresampler(internal_rate_pcm, sample_rate_pcm)
-
-      // Construct IfResampler to first convert to internal PCM rate
-      ,
-      m_ifresampler(m_sample_rate_demod, internal_rate_pcm)
+    : m_amfilter_coeff(amfilter_coeff), m_mode(mode), m_baseband_mean(0),
+      m_baseband_level(0), m_if_rms(0.0)
 
       // Construct AM narrow filter
       ,
       m_amfilter(m_amfilter_coeff, 1)
 
+      // Construct CW narrow filter (in sample rate 12kHz)
+      ,
+      m_cwfilter(FilterParameters::jj1bdx_cw_12khz_500hz, 1)
+
+      // Construct SSB narrow filter
+      ,
+      m_ssbfilter(FilterParameters::jj1bdx_am_48khz_narrow, 1)
+
       // IF down/upshifter
       ,
       m_upshifter(true), m_downshifter(false)
 
-      // SSB shifted-audio filter from 3 to 6kHz
+      // SSB shifted-audio filter from 12 to 24kHz
       ,
-      m_ssbshiftfilter(FilterParameters::jj1bdx_ssb_3to6khz, 1)
-
-      // Construct IfResampler to first convert to internal PCM rate
-      ,
-      m_cw_downsampler(internal_rate_pcm, cw_rate_pcm),
-      m_cw_upsampler(cw_rate_pcm, internal_rate_pcm)
-
-      // IF upshifter for CW
-      ,
-      m_upshifter_cw(true)
-
-      // CW baseband filter for +- 250Hz
-      ,
-      m_cwshiftfilter(FilterParameters::jj1bdx_cw_250hz, 1)
+      m_ssbshiftfilter(FilterParameters::jj1bdx_ssb_48khz_12to24khz, 1)
 
       // Construct HighPassFilterIir
       // cutoff: 60Hz for 12kHz sampling rate
@@ -76,8 +95,8 @@ AmDecoder::AmDecoder(double sample_rate_demod, IQSampleCoeff &amfilter_coeff,
       // Construct AF AGC
       // Use mostly as peak limiter
       ,
-      m_afagc(1.0, // initial_gain
-              1.5, // max_gain
+      m_afagc(0.0001, // initial_gain
+              1.5,    // max_gain
               // reference
               ((m_mode == ModType::USB) || (m_mode == ModType::LSB))
                   ? 0.1
@@ -98,43 +117,61 @@ AmDecoder::AmDecoder(double sample_rate_demod, IQSampleCoeff &amfilter_coeff,
                                             // default value
                                             : 0.7,
               0.001 // rate
-      ) {
+              )
+
+      // fine tuner for pitch shifting (shift up 500Hz)
+      ,
+      m_finetuner(internal_rate_pcm / 100, 500 / 100)
+
+      // CW downsampler and upsampler
+      ,
+      m_cw_downsampler(internal_rate_pcm, cw_rate_pcm),
+      m_cw_upsampler(cw_rate_pcm, internal_rate_pcm)
+
+{
   // Do nothing
 }
 
 void AmDecoder::process(const IQSampleVector &samples_in, SampleVector &audio) {
-
-  // Apply narrower filters
-  m_amfilter.process(samples_in, m_buf_filtered);
-
-  // Shift Fs/4 and filter Fs/4~Fs/2 frequency bandwidth only
   switch (m_mode) {
+  case ModType::AM:
+  case ModType::DSB:
+    // Apply narrower filters
+    m_amfilter.process(samples_in, m_buf_filtered3);
+    break;
   case ModType::USB:
+    // Apply SSB filters
+    m_ssbfilter.process(samples_in, m_buf_filtered);
+    // Shift Fs/2 and eliminate the lower sideband
     m_upshifter.process(m_buf_filtered, m_buf_filtered2a);
     m_ssbshiftfilter.process(m_buf_filtered2a, m_buf_filtered2b);
     m_downshifter.process(m_buf_filtered2b, m_buf_filtered3);
     break;
   case ModType::LSB:
+    // Apply SSB filters
+    m_ssbfilter.process(samples_in, m_buf_filtered);
+    // Shift Fs/2 and eliminate the upper sideband
     m_downshifter.process(m_buf_filtered, m_buf_filtered2a);
     m_ssbshiftfilter.process(m_buf_filtered2a, m_buf_filtered2b);
     m_upshifter.process(m_buf_filtered2b, m_buf_filtered3);
     break;
   case ModType::CW:
-    m_cw_downsampler.process(m_buf_filtered, m_buf_filtered2a);
+    // Apply CW filter
+    m_cw_downsampler.process(samples_in, m_buf_filtered);
     // If no downsampled signal comes out, terminate and wait for next block.
-    if (m_buf_filtered2a.size() == 0) {
+    if (m_buf_filtered.size() == 0) {
       audio.resize(0);
       return;
     }
-    m_cwshiftfilter.process(m_buf_filtered2a, m_buf_filtered2b);
-    // CW pitch: 500Hz
-    m_upshifter_cw.process(m_buf_filtered2b, m_buf_filtered2c);
-    m_cw_upsampler.process(m_buf_filtered2c, m_buf_filtered3);
+    m_cwfilter.process(m_buf_filtered, m_buf_filtered2a);
+    m_cw_upsampler.process(m_buf_filtered2a, m_buf_filtered2b);
     // If no upsampled signal comes out, terminate and wait for next block.
-    if (m_buf_filtered3.size() == 0) {
+    if (m_buf_filtered2b.size() == 0) {
       audio.resize(0);
       return;
     }
+    // Shift up to an audio frequency (500Hz)
+    m_finetuner.process(m_buf_filtered2b, m_buf_filtered3);
     break;
   default:
     m_buf_filtered3 = std::move(m_buf_filtered);
@@ -183,17 +220,14 @@ void AmDecoder::process(const IQSampleVector &samples_in, SampleVector &audio) {
   // DC blocking.
   m_dcblock.process_inplace(m_buf_baseband_demod);
 
-  // Upsample baseband signal.
-  m_audioresampler.process(m_buf_baseband_demod, m_buf_baseband_preagc);
-
   // If no baseband audio signal comes out, terminate and wait for next block,
-  if (m_buf_baseband_preagc.size() == 0) {
+  if (m_buf_baseband_demod.size() == 0) {
     audio.resize(0);
     return;
   }
 
   // Audio AGC
-  m_afagc.process(m_buf_baseband_preagc, m_buf_baseband);
+  m_afagc.process(m_buf_baseband_demod, m_buf_baseband);
 
   // Measure baseband level after DC blocking.
   float baseband_mean, baseband_rms;

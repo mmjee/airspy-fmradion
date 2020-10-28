@@ -22,18 +22,18 @@
 
 #include "SoftFM.h"
 
-/** Low-pass filter for IQ samples. */
+// Low-pass filter for IQ samples.
 class LowPassFilterFirIQ {
 public:
-  /**
-   * Construct low-pass filter.
-   *
-   * coeff        :: FIR filter coefficients.
-   * downsample   :: Integer downsampling rate (>= 1)
-   */
-  LowPassFilterFirIQ(const IQSampleCoeff &coeff, unsigned int downsample);
+  //
+  // Construct low-pass filter.
+  //
+  // coeff        :: FIR filter coefficients.
+  // downsample   :: Integer downsampling rate (>= 1)
+  //
+  LowPassFilterFirIQ(const IQSampleCoeff &coeff, const unsigned int downsample);
 
-  /** Process samples. */
+  // Process samples.
   void process(const IQSampleVector &samples_in, IQSampleVector &samples_out);
 
 private:
@@ -47,14 +47,14 @@ private:
 // Low-pass filter for mono audio signal.
 class LowPassFilterFirAudio {
 public:
-  /**
-   * Construct low-pass mono audio filter. No down/up-sampling.
-   *
-   * coeff        :: FIR filter coefficients.
-   */
+  //
+  // Construct low-pass mono audio filter. No down/up-sampling.
+  //
+  // coeff        :: FIR filter coefficients.
+  //
   LowPassFilterFirAudio(const SampleCoeff &coeff);
 
-  /** Process samples. */
+  // Process samples.
   void process(const SampleVector &samples_in, SampleVector &samples_out);
 
 private:
@@ -64,27 +64,27 @@ private:
   unsigned int m_pos;
 };
 
-/** First order low-pass IIR filter for real-valued signals. */
+// First order low-pass IIR filter for real-valued signals.
 class LowPassFilterRC {
 public:
-  /**
-   * Construct 1st order low-pass IIR filter.
-   *
-   * timeconst :: RC time constant in seconds (1 / (2 * PI * cutoff_freq)
-   */
-  LowPassFilterRC(double timeconst);
+  //
+  // Construct 1st order low-pass IIR filter.
+  //
+  // timeconst :: RC time constant in seconds (1 / (2 * PI * cutoff_freq)
+  //
+  LowPassFilterRC(const double timeconst);
 
-  /** Process samples. */
+  // Process samples.
   void process(const SampleVector &samples_in, SampleVector &samples_out);
 
-  /** Process samples in-place. */
+  // Process samples in-place.
   void process_inplace(SampleVector &samples);
 
-  /** Process interleaved samples. */
+  // Process interleaved samples.
   void process_interleaved(const SampleVector &samples_in,
                            SampleVector &samples_out);
 
-  /** Process interleaved samples in-place. */
+  // Process interleaved samples in-place.
   void process_interleaved_inplace(SampleVector &samples);
 
 private:
@@ -95,21 +95,21 @@ private:
   Sample m_y1_1;
 };
 
-/** High-pass filter for real-valued signals based on Butterworth IIR filter. */
+// High-pass filter for real-valued signals based on Butterworth IIR filter.
 class HighPassFilterIir {
 public:
-  /**
-   * Construct 2nd order high-pass IIR filter.
-   *
-   * cutoff   :: High-pass cutoff relative to the sample frequency
-   *             (valid range 0.0 .. 0.5, 0.5 = Nyquist)
-   */
-  HighPassFilterIir(double cutoff);
+  //
+  // Construct 2nd order high-pass IIR filter.
+  //
+  // cutoff   :: High-pass cutoff relative to the sample frequency
+  //             (valid range 0.0 .. 0.5, 0.5 = Nyquist)
+  //
+  HighPassFilterIir(const double cutoff);
 
-  /** Process samples. */
+  // Process samples.
   void process(const SampleVector &samples_in, SampleVector &samples_out);
 
-  /** Process samples in-place. */
+  // Process samples in-place.
   void process_inplace(SampleVector &samples);
 
 private:

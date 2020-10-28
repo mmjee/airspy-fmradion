@@ -25,6 +25,8 @@
 
 #include "SoftFM.h"
 
+#include "portaudio.h"
+
 /** Base class for writing audio data to file or playback. */
 class AudioOutput {
 public:
@@ -61,6 +63,8 @@ public:
   /** Return true if the stream is OK, return false if there is an error. */
   operator bool() const { return (!m_zombie) && m_error.empty(); }
 
+  const std::string get_device_name() { return m_device_name; }
+
 protected:
   /** Constructor. */
   AudioOutput() : m_zombie(false), m_converter(samplesToInt16) {}
@@ -68,6 +72,7 @@ protected:
   std::string m_error;
   bool m_zombie;
   void (*m_converter)(const SampleVector &, std::vector<std::uint8_t> &);
+  std::string m_device_name;
 
 private:
   AudioOutput(const AudioOutput &);            // no copy constructor
@@ -140,28 +145,30 @@ private:
   std::vector<std::uint8_t> m_bytebuf;
 };
 
-#ifdef USE_ALSA
-/** Write audio data to ALSA device. */
-class AlsaAudioOutput : public AudioOutput {
+class PortAudioOutput : public AudioOutput {
 public:
-  /**
-   * Construct ALSA output stream.
-   *
-   * dename       :: ALSA PCM device
-   * samplerate   :: audio sample rate in Hz
-   * stereo       :: true if the output stream contains stereo data
-   */
-  AlsaAudioOutput(const std::string &devname, unsigned int samplerate,
+  //
+  // Construct PortAudio output stream.
+  //
+  // device_index :: device index number
+  // samplerate   :: audio sample rate in Hz
+  // stereo       :: true if the output stream contains stereo data
+  PortAudioOutput(const PaDeviceIndex device_index, unsigned int samplerate,
                   bool stereo);
 
-  virtual ~AlsaAudioOutput() override;
+  virtual ~PortAudioOutput() override;
   virtual bool write(const SampleVector &samples) override;
 
 private:
+  // Terminate PortAudio
+  // then add PortAudio error string to m_error and set m_zombie flag.
+  void add_paerror(const std::string &msg);
+
   unsigned int m_nchannels;
-  struct _snd_pcm *m_pcm;
+  PaStreamParameters m_outputparams;
+  PaStream *m_stream;
+  PaError m_paerror;
   std::vector<std::uint8_t> m_bytebuf;
 };
-#endif // USE_ALSA
 
 #endif

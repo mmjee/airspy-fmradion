@@ -2,7 +2,7 @@
 //
 // Copyright (C) 2013, Joris van Rantwijk.
 // Copyright (C) 2015 Edouard Griffiths, F4EXB
-// Copyright (C) 2018, 2019 Kenji Rikitake, JJ1BDX
+// Copyright (C) 2018, 2019, 2020 Kenji Rikitake, JJ1BDX
 //
 // This program is free software; you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -49,26 +49,10 @@
 // define this for enabling coefficient monitor functions
 // #undef COEFF_MONITOR
 
-#define AIRSPY_FMRADION_VERSION "v0.8.4-pre0"
+#define AIRSPY_FMRADION_VERSION "20201025-0"
 
 /** Flag is set on SIGINT / SIGTERM. */
 static std::atomic_bool stop_flag(false);
-
-#define PEAK_LIMIT_LEVEL (0.95)
-
-// Simple linear gain adjustment and peak limiting.
-inline void adjust_gain_and_peak_limit(SampleVector &samples, double gain) {
-  for (unsigned int i = 0, n = samples.size(); i < n; i++) {
-    double amplitude = samples[i] * gain;
-    // hard limiting
-    if (amplitude > PEAK_LIMIT_LEVEL) {
-      amplitude = PEAK_LIMIT_LEVEL;
-    } else if (amplitude < -(PEAK_LIMIT_LEVEL)) {
-      amplitude = -(PEAK_LIMIT_LEVEL);
-    }
-    samples[i] = amplitude;
-  }
-}
 
 /**
  * Get data from output buffer and write to output stream.
@@ -126,7 +110,7 @@ void usage() {
       "                   - dsb\n"
       "                   - usb\n"
       "                   - lsb\n"
-      "                   - cw (pitch and width: 500Hz)\n"
+      "                   - cw (pitch: 500Hz USB)\n"
       "                   - nbfm\n"
       "  -t devtype     Device type:\n"
       "                   - rtlsdr: RTL-SDR devices\n"
@@ -144,26 +128,38 @@ void usage() {
       "  -F filename    Write audio data as raw FLOAT_LE samples\n"
       "                 use filename '-' to write to stdout\n"
       "  -W filename    Write audio data to .WAV file\n"
-      "  -P [device]    Play audio via ALSA device (default 'default')\n"
+      "  -P device_num  Play audio via PortAudio device index number\n"
+      "                 use string '-' to specify the default PortAudio "
+      "device\n"
       "  -T filename    Write pulse-per-second timestamps\n"
       "                 use filename '-' to write to stdout\n"
-      "  -b seconds     Set audio buffer size in seconds\n"
+      "  -b seconds     Set audio buffer size in seconds (default: 1 second)\n"
       "  -X             Shift pilot phase (for Quadrature Multipath Monitor)\n"
       "                 (-X is ignored under mono mode (-M))\n"
       "  -U             Set deemphasis to 75 microseconds (default: 50)\n"
       "  -f filtername  Filter type:\n"
       "                 For FM:\n"
-      "                   - default: +-176kHz\n"
-      "                   - medium:  +-145kHz\n"
-      "                   - narrow:  +-112kHz\n"
+      "                   - wide: same as default\n"
+      "                   - default: none after conversion\n"
+      "                   - medium:  +-156kHz\n"
+      "                   - narrow:  +-121kHz\n"
       "                 For AM:\n"
+      "                   - wide: +-9kHz\n"
       "                   - default: +-6kHz\n"
-      "                   - medium:  +-4kHz\n"
+      "                   - medium:  +-4.5kHz\n"
       "                   - narrow:  +-3kHz\n"
+      "                 For NBFM:\n"
+      "                   - wide: +-20kHz, with +-17kHz deviation\n"
+      "                   - default: +-10kHz\n"
+      "                   - medium:  +-8kHz\n"
+      "                   - narrow:  +-6.25kHz\n"
       "  -l dB          Set IF squelch level to minus given value of dB\n"
       "  -E stages      Enable multipath filter for FM\n"
       "                 (For stable reception only:\n"
       "                  turn off if reception becomes unstable)\n"
+      "  -r ppm         Set IF offset in ppm (range: +-1000000ppm)\n"
+      "                 (This option affects output pitch and timing:\n"
+      "                  use for the output timing compensation only!)\n"
       "\n"
       "Configuration options for RTL-SDR devices\n"
       "  freq=<int>     Frequency of radio station in Hz (default 100000000)\n"
@@ -309,14 +305,9 @@ int main(int argc, char **argv) {
   int devidx = 0;
   int pcmrate = FmDecoder::sample_rate_pcm;
   bool stereo = true;
-#ifdef USE_ALSA
-  OutputMode outmode = OutputMode::ALSA;
-  std::string filename;
-#else  // !USE_ALSA
   OutputMode outmode = OutputMode::RAW_INT16;
   std::string filename("-");
-#endif // USE_ALSA
-  std::string alsadev("default");
+  int portaudiodev = -1;
   bool quietmode = false;
   std::string ppsfilename;
   FILE *ppsfile = nullptr;
@@ -326,6 +317,8 @@ int main(int argc, char **argv) {
   bool pilot_shift = false;
   bool deemphasis_na = false;
   int multipathfilter_stages = 0;
+  bool ifrate_offset_enable = false;
+  double ifrate_offset_ppm = 0;
   std::string config_str;
   std::string devtype_str;
   DevType devtype;
@@ -340,27 +333,29 @@ int main(int argc, char **argv) {
   fprintf(stderr, "Software FM/AM radio for ");
   fprintf(stderr, "Airspy R2, Airspy HF+, and RTL-SDR\n");
 
-  const struct option longopts[] = {{"modtype", 2, nullptr, 'm'},
-                                    {"devtype", 2, nullptr, 't'},
-                                    {"quiet", 1, nullptr, 'q'},
-                                    {"config", 2, nullptr, 'c'},
-                                    {"dev", 1, nullptr, 'd'},
-                                    {"mono", 0, nullptr, 'M'},
-                                    {"raw", 1, nullptr, 'R'},
-                                    {"float", 1, nullptr, 'F'},
-                                    {"wav", 1, nullptr, 'W'},
-                                    {"play", 2, nullptr, 'P'},
-                                    {"pps", 1, nullptr, 'T'},
-                                    {"buffer", 1, nullptr, 'b'},
-                                    {"pilotshift", 0, nullptr, 'X'},
-                                    {"usa", 0, nullptr, 'U'},
-                                    {"filtertype", 2, nullptr, 'f'},
-                                    {"squelch", 1, nullptr, 'l'},
-                                    {"multipathfilter", 1, nullptr, 'E'},
-                                    {nullptr, 0, nullptr, 0}};
+  const struct option longopts[] = {
+      {"modtype", optional_argument, nullptr, 'm'},
+      {"devtype", optional_argument, nullptr, 't'},
+      {"quiet", required_argument, nullptr, 'q'},
+      {"config", optional_argument, nullptr, 'c'},
+      {"dev", required_argument, nullptr, 'd'},
+      {"mono", no_argument, nullptr, 'M'},
+      {"raw", required_argument, nullptr, 'R'},
+      {"float", required_argument, nullptr, 'F'},
+      {"wav", required_argument, nullptr, 'W'},
+      {"play", optional_argument, nullptr, 'P'},
+      {"pps", required_argument, nullptr, 'T'},
+      {"buffer", required_argument, nullptr, 'b'},
+      {"pilotshift", no_argument, nullptr, 'X'},
+      {"usa", no_argument, nullptr, 'U'},
+      {"filtertype", optional_argument, nullptr, 'f'},
+      {"squelch", required_argument, nullptr, 'l'},
+      {"multipathfilter", required_argument, nullptr, 'E'},
+      {"ifrateppm", optional_argument, nullptr, 'r'},
+      {nullptr, no_argument, nullptr, 0}};
 
   int c, longindex;
-  while ((c = getopt_long(argc, argv, "m:t:c:d:MR:F:W:f:l:P::T:b:qXUE:",
+  while ((c = getopt_long(argc, argv, "m:t:c:d:MR:F:W:f:l:P:T:b:qXUE:r:",
                           longopts, &longindex)) >= 0) {
     switch (c) {
     case 'm':
@@ -403,9 +398,11 @@ int main(int argc, char **argv) {
       enable_squelch = true;
       break;
     case 'P':
-      outmode = OutputMode::ALSA;
-      if (optarg != nullptr) {
-        alsadev = optarg;
+      outmode = OutputMode::PORTAUDIO;
+      if (0 == strncmp(optarg, "-", 1)) {
+        portaudiodev = -1;
+      } else if (!parse_int(optarg, portaudiodev) || portaudiodev < 0) {
+        badarg("-P");
       }
       break;
     case 'T':
@@ -429,6 +426,13 @@ int main(int argc, char **argv) {
       if (!parse_int(optarg, multipathfilter_stages) ||
           multipathfilter_stages < 1) {
         badarg("-E");
+      }
+      break;
+    case 'r':
+      ifrate_offset_enable = true;
+      if (!Utility::parse_dbl(optarg, ifrate_offset_ppm) ||
+          std::fabs(ifrate_offset_ppm) > 1000000.0) {
+        badarg("-r");
       }
       break;
     default:
@@ -498,6 +502,8 @@ int main(int argc, char **argv) {
     filtertype = FilterType::Medium;
   } else if (strcasecmp(filtertype_str.c_str(), "narrow") == 0) {
     filtertype = FilterType::Narrow;
+  } else if (strcasecmp(filtertype_str.c_str(), "wide") == 0) {
+    filtertype = FilterType::Wide;
   } else {
     fprintf(stderr, "Filter type string unsuppored\n");
     exit(1);
@@ -553,21 +559,17 @@ int main(int argc, char **argv) {
   }
 
   // Calculate number of samples in audio buffer.
-  unsigned int outputbuf_samples = 0;
-
-  if (bufsecs < 0 &&
-      (outmode == OutputMode::ALSA ||
-       (outmode == OutputMode::RAW_INT16 && filename == "-") ||
-       (outmode == OutputMode::RAW_FLOAT32 && filename == "-"))) {
-    // Set default buffer to 1 second for interactive output streams.
-    outputbuf_samples = pcmrate;
-  } else if (bufsecs > 0) {
-    // Calculate nr of samples for configured buffer length.
+  // Set default buffer length to 1 second.
+  unsigned int outputbuf_samples = pcmrate;
+  // if bufsecs is explicitly set in the command line (not negative),
+  // set the calculate number of samples for configured buffer length.
+  if (bufsecs > 0) {
+    // Calculate numberr of samples for configured buffer length.
     outputbuf_samples = (unsigned int)(bufsecs * pcmrate);
   }
-  if (outputbuf_samples < 1024) {
-    // Set minimum limit for the output buffer length.
-    outputbuf_samples = 1024;
+  // Set minimum limit for the output buffer length.
+  if (outputbuf_samples < 480) {
+    outputbuf_samples = 480;
   }
   fprintf(stderr, "output buffer length: %g [s]\n",
           outputbuf_samples / double(pcmrate));
@@ -594,15 +596,15 @@ int main(int argc, char **argv) {
     fprintf(stderr, "writing audio samples to '%s'\n", filename.c_str());
     audio_output.reset(new WavAudioOutput(filename, pcmrate, stereo));
     break;
-  case OutputMode::ALSA:
-#ifdef USE_ALSA
-    fprintf(stderr, "playing audio to ALSA device '%s'\n", alsadev.c_str());
-    audio_output.reset(new AlsaAudioOutput(alsadev, pcmrate, stereo));
+  case OutputMode::PORTAUDIO:
+    if (portaudiodev == -1) {
+      fprintf(stderr, "playing audio to PortAudio default device: ");
+    } else {
+      fprintf(stderr, "playing audio to PortAudio device %d: ", portaudiodev);
+    }
+    audio_output.reset(new PortAudioOutput(portaudiodev, pcmrate, stereo));
+    fprintf(stderr, "name '%s'\n", audio_output->get_device_name().c_str());
     break;
-#else  // !USE_ALSA
-    fprintf(stderr, "ALSA not implemented\n");
-    exit(1);
-#endif // USE_ALSA
   }
 
   if (!(*audio_output)) {
@@ -643,36 +645,9 @@ int main(int argc, char **argv) {
 
   bool enable_downsampling = true;
   double if_decimation_ratio = 1.0;
-  double fm_target_rate;
+  double fm_target_rate = FmDecoder::sample_rate_if;
   double am_target_rate = AmDecoder::internal_rate_pcm;
-  double nbfm_target_rate;
-
-  switch (filtertype) {
-  case FilterType::Default:
-    // 384 * 0.982 ~= 377kHz
-    fm_target_rate = 384000;
-    break;
-  case FilterType::Medium:
-    // 318 * 0.982 ~= 312kHz
-    fm_target_rate = 318000;
-    break;
-  case FilterType::Narrow:
-    // 246 * 0.982 ~= 242kHz
-    fm_target_rate = 246000;
-    break;
-  }
-
-  switch (filtertype) {
-  case FilterType::Default:
-    nbfm_target_rate = 20000;
-    break;
-  case FilterType::Medium:
-    nbfm_target_rate = 16000;
-    break;
-  case FilterType::Narrow:
-    nbfm_target_rate = 12500;
-    break;
-  }
+  double nbfm_target_rate = NbfmDecoder::internal_rate_pcm;
 
   // Configure blocksize.
   switch (devtype) {
@@ -691,13 +666,14 @@ int main(int argc, char **argv) {
     break;
   }
 
+  // IF rate compensation if requested.
+  if (ifrate_offset_enable) {
+    ifrate *= 1.0 + (ifrate_offset_ppm / 1000000.0);
+  }
+
   // Configure if_decimation_ratio.
   switch (modtype) {
   case ModType::FM:
-    // the target_rate should not exceed the target rate
-    if (fm_target_rate > ifrate) {
-      fm_target_rate = ifrate;
-    }
     if_decimation_ratio = ifrate / fm_target_rate;
     break;
   case ModType::AM:
@@ -721,6 +697,12 @@ int main(int argc, char **argv) {
   double demodulator_rate = ifrate / if_decimation_ratio;
   double total_decimation_ratio = ifrate / pcmrate;
   double audio_decimation_ratio = demodulator_rate / pcmrate;
+
+  // Display ifrate compensation if applicable.
+  if (ifrate_offset_enable) {
+    fprintf(stderr, "IF sample rate shifted by: %.9g [ppm]\n",
+            ifrate_offset_ppm);
+  }
 
   // Display filter configuration.
   fprintf(stderr, "IF sample rate: %.9g [Hz], ", ifrate);
@@ -759,37 +741,50 @@ int main(int argc, char **argv) {
   );
   enable_downsampling = (ifrate != demodulator_rate);
 
-  // Prepare FM decoder.
-  FmDecoder fm(demodulator_rate, // sample_rate_demod
-               stereo,           // stereo
-               deemphasis,       // deemphasis,
-               pilot_shift,      // pilot_shift
-               static_cast<unsigned int>(multipathfilter_stages)
-               // multipath_stages
-  );
-
   IQSampleCoeff amfilter_coeff;
+  IQSampleCoeff fmfilter_coeff;
+  IQSampleCoeff nbfmfilter_coeff;
 
   switch (filtertype) {
   case FilterType::Default:
-    amfilter_coeff = FilterParameters::delay_3taps_only_iq;
+    amfilter_coeff = FilterParameters::jj1bdx_am_48khz_default;
+    fmfilter_coeff = FilterParameters::delay_3taps_only_iq;
+    nbfmfilter_coeff = FilterParameters::jj1bdx_nbfm_48khz_default;
     break;
   case FilterType::Medium:
-    amfilter_coeff = FilterParameters::jj1bdx_am_12khz_medium;
+    amfilter_coeff = FilterParameters::jj1bdx_am_48khz_medium;
+    fmfilter_coeff = FilterParameters::jj1bdx_fm_384kHz_medium;
+    nbfmfilter_coeff = FilterParameters::jj1bdx_nbfm_48khz_medium;
     break;
   case FilterType::Narrow:
-    amfilter_coeff = FilterParameters::jj1bdx_am_12khz_narrow;
+    amfilter_coeff = FilterParameters::jj1bdx_am_48khz_narrow;
+    fmfilter_coeff = FilterParameters::jj1bdx_fm_384kHz_narrow;
+    nbfmfilter_coeff = FilterParameters::jj1bdx_nbfm_48khz_narrow;
+    break;
+  case FilterType::Wide:
+    amfilter_coeff = FilterParameters::jj1bdx_am_48khz_wide;
+    fmfilter_coeff = FilterParameters::delay_3taps_only_iq;
+    nbfmfilter_coeff = FilterParameters::jj1bdx_nbfm_48khz_wide;
     break;
   }
 
   // Prepare AM decoder.
-  AmDecoder am(demodulator_rate, // sample_rate_demod
-               amfilter_coeff,   // amfilter_coeff
-               modtype           // mode
+  AmDecoder am(amfilter_coeff, // amfilter_coeff
+               modtype         // mode
+  );
+
+  // Prepare FM decoder.
+  FmDecoder fm(fmfilter_coeff, // fmfilter_coeff
+               stereo,         // stereo
+               deemphasis,     // deemphasis,
+               pilot_shift,    // pilot_shift
+               static_cast<unsigned int>(multipathfilter_stages)
+               // multipath_stages
   );
 
   // Prepare narrow band FM decoder.
-  NbfmDecoder nbfm(demodulator_rate // sample_rate_demod
+  NbfmDecoder nbfm(nbfmfilter_coeff,            // nbfmfilter_coeff
+                   NbfmDecoder::freq_dev_normal // freq_dev
   );
 
   // Initialize moving average object for FM ppm monitoring.
@@ -828,17 +823,13 @@ int main(int argc, char **argv) {
   // If buffering enabled, start background output thread.
   DataBuffer<Sample> output_buffer;
   std::thread output_thread;
-
-  if (outputbuf_samples > 0) {
-    output_thread = std::thread(write_output_data, audio_output.get(),
-                                &output_buffer, outputbuf_samples * nchannel);
-  }
-
+  // Always use output_thread for smooth output.
+  output_thread = std::thread(write_output_data, audio_output.get(),
+                              &output_buffer, outputbuf_samples * nchannel);
   SampleVector audiosamples;
   bool inbuf_length_warning = false;
   float audio_level = 0;
   bool got_stereo = false;
-  bool multipath_filter_skipped = false;
 
   double block_time = get_time();
 
@@ -949,8 +940,7 @@ int main(int argc, char **argv) {
 
       // Set nominal audio volume (-6dB) when IF squelch is open,
       // set to zero volume if the squelch is closed.
-      adjust_gain_and_peak_limit(audiosamples,
-                                 if_rms >= squelch_level ? 0.5 : 0.0);
+      Utility::adjust_gain(audiosamples, if_rms >= squelch_level ? 0.5 : 0.0);
     }
 
     if (modtype == ModType::FM) {
@@ -980,15 +970,6 @@ int main(int argc, char **argv) {
                     fm.get_pilot_level());
           } else {
             fprintf(stderr, "\nlost stereo signal\n");
-          }
-        }
-        // Show if multipath filter is skipped
-        if (!multipath_filter_skipped) {
-          multipath_filter_skipped = fm.multipath_filter_skipped();
-          if (multipath_filter_skipped) {
-            // print only once
-            fprintf(stderr, "Skip further multipath filter processing: "
-                            "filter output abnormality\n");
           }
         }
       }
@@ -1076,13 +1057,8 @@ int main(int argc, char **argv) {
     // (Increased from one to support high sampling rates)
     if ((block > discarding_blocks) && audio_exists) {
       // Write samples to output.
-      if (outputbuf_samples > 0) {
-        // Buffered write.
-        output_buffer.push(std::move(audiosamples));
-      } else {
-        // Direct write.
-        audio_output->write(audiosamples);
-      }
+      // Always use buffered write.
+      output_buffer.push(std::move(audiosamples));
     }
   }
 
@@ -1091,10 +1067,8 @@ int main(int argc, char **argv) {
   // Join background threads.
   up_srcsdr->stop();
 
-  if (outputbuf_samples > 0) {
-    output_buffer.push_end();
-    output_thread.join();
-  }
+  output_buffer.push_end();
+  output_thread.join();
 
   // No cleanup needed; everything handled by destructors
 

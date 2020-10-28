@@ -1,4 +1,4 @@
-# CMake definitions for SoftFM
+# CMake definitions for airspy-fmradion
 
 cmake_minimum_required(VERSION 3.0.2)
 project(airspy-fmradion)
@@ -8,15 +8,21 @@ if(COMMAND cmake_policy)
   cmake_policy(SET CMP0003 NEW)
 endif(COMMAND cmake_policy)
 
-find_package(Threads)
-find_package(PkgConfig)
-# libvolk installation recommendation by Takehiro Sekine
-find_package(Volk)
+# Use pkg-config
+include(FindPkgConfig)
 
-# Require ALSA only for Linux
-if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    find_package(ALSA REQUIRED)
+find_package(Threads)
+
+# Find Volk library.
+pkg_check_modules(PKG_VOLK volk)
+if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    find_library(VOLK_LIBRARY libvolk.dylib
+	HINTS /usr/local/lib ${PKG_VOLK_LIBRARY_DIRS})
+else()
+    find_library(VOLK_LIBRARY libvolk.so
+	HINTS ${PKG_VOLK_LIBRARY_DIRS})
 endif()
+message(STATUS "volk library: ${VOLK_LIBRARY}")
 
 # Find Airspy library.
 pkg_check_modules(PKG_AIRSPY libairspy)
@@ -93,11 +99,28 @@ FIND_PATH(SNDFILE_INCLUDE_DIR sndfile.h
         HINT ${PKG_SNDFILE_INCLUDE_DIRS})
 MESSAGE(STATUS "Sndfile: ${SNDFILE_LIBRARY}, ${SNDFILE_INCLUDE_DIR}")
 
-if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    set(ALSA_OPTION "-DUSE_ALSA")
-else ()
-    set(ALSA_OPTION "")
-endif()
+# for PortAudio
+pkg_check_modules(PORTAUDIO2 portaudio-2.0)
+if (PORTAUDIO2_FOUND)
+    set(PORTAUDIO_INCLUDE_DIRS ${PORTAUDIO2_INCLUDE_DIRS})
+    set(PORTAUDIO_LIBRARY_DIRS ${PORTAUDIO2_LIBRARY_DIRS})
+    set(PORTAUDIO_LINK_LIBRARIES ${PORTAUDIO2_LINK_LIBRARIES})
+    set(PORTAUDIO_VERSION 19)
+    set(PORTAUDIO_FOUND TRUE)
+    find_path(PORTAUDIO_INCLUDE_DIR portaudio.h
+        HINTS /usr/local/include ${PORTAUDIO_INCLUDE_DIRS})
+    if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+        find_library(PORTAUDIO_LIBRARY libportaudio.dylib
+               HINTS /usr/local/lib ${PORTAUDIO_LIBRARY_DIRS})
+    else (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+        find_library(PORTAUDIO_LIBRARY libportaudio.so
+               HINTS /usr/local/lib ${PORTAUDIO_LIBRARY_DIRS})
+    endif (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+else (PORTAUDIO2_FOUND)
+    message(FATAL_ERROR "Could not find Portaudio")
+endif (PORTAUDIO2_FOUND)
+message(STATUS "libportaudio: ${PORTAUDIO_INCLUDE_DIR}, ${PORTAUDIO_LIBRARY}")
+message(STATUS "PortAudio libs: ${PORTAUDIO_LINK_LIBRARIES}")
 
 if(RTLSDR_INCLUDE_DIR AND RTLSDR_LIBRARY)
     message(STATUS "Found librtlsdr: ${RTLSDR_INCLUDE_DIR}, ${RTLSDR_LIBRARY}")
@@ -119,22 +142,24 @@ set(AIRSPYHF_LIBRARIES    ${AIRSPYHF_LIBRARY} ${LIBUSB_LIBRARY})
 # Optimization flags and options.
 ##
 # Enable speed-based optimization
-set(OPTIMIZATION_FLAGS "-O3 -ffast-math -ftree-vectorize -march=native")
+# Do not apply -ffast-math; it enables -menable-no-nans
+# which cancels detection functions of multipath filter abnormality!
+set(OPTIMIZATION_FLAGS "-O3 -ftree-vectorize -march=native")
 ##
 # Use conservative options when failed to run
 #set(OPTIMIZATION_FLAGS "-O2")
 ##
 # For vectorization analysis (in Clang only)
-#set(OPTIMIZATION_FLAGS "-O3 -ffast-math -ftree-vectorize -march=native -Rpass=loop-vectorize -Rpass-missed=loop-vectorize -Rpass-analysis=loop-vectorize")
+#set(OPTIMIZATION_FLAGS "-O3 -ftree-vectorize -march=native -Rpass=loop-vectorize -Rpass-missed=loop-vectorize -Rpass-analysis=loop-vectorize")
 ##
 # For clang profiling with optimization
-#set(OPTIMIZATION_FLAGS "-O3 -ffast-math -ftree-vectorize -march=native -g -fprofile-instr-generate -fcoverage-mapping")
+#set(OPTIMIZATION_FLAGS "-O3 -ftree-vectorize -march=native -g -fprofile-instr-generate -fcoverage-mapping")
 #SET(CMAKE_EXE_LINKER_FLAGS "-fprofile-instr-generate")
 ##
 
 # Common compiler flags and options.
 ##
-set(CMAKE_CXX_FLAGS "-Wall -std=c++11 ${OPTIMIZATION_FLAGS} ${ALSA_OPTION} ${AIRSPY_INCLUDE_OPTION} ${AIRSPYHF_INCLUDE_OPTION} ${EXTRA_FLAGS}")
+set(CMAKE_CXX_FLAGS "-Wall -std=c++11 ${OPTIMIZATION_FLAGS} ${AIRSPY_INCLUDE_OPTION} ${AIRSPYHF_INCLUDE_OPTION} ${EXTRA_FLAGS}")
 
 set(sfmbase_SOURCES
     sfmbase/AfAgc.cpp
@@ -203,15 +228,15 @@ add_executable(airspy-fmradion
 
 include_directories(
     ${CMAKE_SOURCE_DIR}/include
-    ${ALSA_INCLUDE_DIRS}
+    ${PORTAUDIO_INCLUDE_DIR}
     ${EXTRA_INCLUDES}
 )
 
 target_link_libraries(airspy-fmradion
     sfmbase
     ${CMAKE_THREAD_LIBS_INIT}
-    ${ALSA_LIBRARIES}
-    ${VOLK_LIBRARIES}
+    ${PORTAUDIO_LINK_LIBRARIES}
+    ${VOLK_LIBRARY}
     ${EXTRA_LIBS}
 )
 

@@ -22,37 +22,55 @@
 #include "NbfmDecode.h"
 #include "Utility.h"
 
+// Define this to print IF AGC level to stderr
+// #define DEBUG_IF_AGC
+
 // class NbfmDecoder
 
-NbfmDecoder::NbfmDecoder(double sample_rate_demod)
+NbfmDecoder::NbfmDecoder(IQSampleCoeff &nbfmfilter_coeff, const double freq_dev)
     // Initialize member fields
-    : m_sample_rate_fmdemod(sample_rate_demod), m_baseband_mean(0),
-      m_baseband_level(0), m_if_rms(0.0)
+    : m_nbfmfilter_coeff(nbfmfilter_coeff), m_freq_dev(freq_dev),
+      m_baseband_mean(0), m_baseband_level(0), m_if_rms(0.0)
 
-      // Construct AudioResampler
+      // Construct NBFM narrow filter
       ,
-      m_audioresampler_raw(m_sample_rate_fmdemod, sample_rate_pcm)
+      m_nbfmfilter(m_nbfmfilter_coeff, 1)
 
       // Construct PhaseDiscriminator
       ,
-      m_phasedisc(freq_dev / m_sample_rate_fmdemod)
+      m_phasedisc(m_freq_dev / internal_rate_pcm)
 
       // Construct LowPassFilterFirAudio
       ,
       m_audiofilter(FilterParameters::jj1bdx_48khz_nbfmaudio)
 
-{
+      // Construct IF AGC
+      // Reference level: 1.0
+      ,
+      m_ifagc(1.0, 100000.0, 1.0, 0.001) {
   // Do nothing
 }
 
 void NbfmDecoder::process(const IQSampleVector &samples_in,
                           SampleVector &audio) {
 
+  // Apply IF filter.
+  m_nbfmfilter.process(samples_in, m_buf_filtered);
+
   // Measure IF RMS level.
-  m_if_rms = Utility::rms_level_approx(samples_in);
+  m_if_rms = Utility::rms_level_approx(m_buf_filtered);
+
+  // Perform IF AGC.
+  m_ifagc.process(m_buf_filtered, m_samples_in_after_agc);
+
+#ifdef DEBUG_IF_AGC
+  // Measure IF RMS level for checking how IF AGC works.
+  float if_agc_rms = Utility::rms_level_approx(m_samples_in_after_agc);
+  fprintf(stderr, "if_agc_rms = %.9g\n", if_agc_rms);
+#endif
 
   // Demodulate FM to audio signal.
-  m_phasedisc.process(samples_in, m_buf_decoded);
+  m_phasedisc.process(m_samples_in_after_agc, m_buf_decoded);
   size_t decoded_size = m_buf_decoded.size();
   // If no downsampled decoded signal comes out,
   // terminate and wait for next block,
@@ -61,12 +79,9 @@ void NbfmDecoder::process(const IQSampleVector &samples_in,
     return;
   }
   // Convert decoded data to baseband data
-  m_buf_baseband_raw.resize(decoded_size);
-  volk_32f_convert_64f(m_buf_baseband_raw.data(), m_buf_decoded.data(),
+  m_buf_baseband.resize(decoded_size);
+  volk_32f_convert_64f(m_buf_baseband.data(), m_buf_decoded.data(),
                        decoded_size);
-
-  // Upsample decoded audio signal to 48kHz.
-  m_audioresampler_raw.process(m_buf_baseband_raw, m_buf_baseband);
 
   // If no downsampled baseband signal comes out,
   // terminate and wait for next block,
@@ -83,6 +98,10 @@ void NbfmDecoder::process(const IQSampleVector &samples_in,
 
   // Filter out audio high frequency noise.
   m_audiofilter.process(m_buf_baseband, m_buf_baseband_filtered);
+
+  // Adjust gain by -3dB (0.707)
+  const double audio_gain = std::pow(10.0, (-3.0 / 20.0));
+  Utility::adjust_gain(m_buf_baseband_filtered, audio_gain);
 
   // Just return mono channel.
   audio = std::move(m_buf_baseband_filtered);

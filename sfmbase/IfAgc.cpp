@@ -36,27 +36,31 @@ IfAgc::IfAgc(const float initial_gain, const float max_gain,
 // Algorithm shown in:
 // https://www.mathworks.com/help/comm/ref/comm.agc-system-object.html
 // https://www.mathworks.com/help/comm/ref/linear_loop_block_diagram.png
+// Note: in the original algorithm,
+// log_amplitude was
+//    std::log(Utility::estimate_magnitude(input)) + (m_log_current_gain * 2.0),
+// but in this implementation the 2.0 was removed (and set to 1.0).
 
 void IfAgc::process(const IQSampleVector &samples_in,
                     IQSampleVector &samples_out) {
   unsigned int n = samples_in.size();
   samples_out.resize(n);
 
+  volk::vector<float> log_gain, gain;
+  log_gain.resize(n);
+  gain.resize(n);
+
   for (unsigned int i = 0; i < n; i++) {
-    // Compute output based on the current gain.
-    float current_gain = std::exp(m_log_current_gain);
-    IQSample input = samples_in[i];
-    IQSample output =
-        IQSample(input.real() * current_gain, input.imag() * current_gain);
-    samples_out[i] = output;
+    // Store logarithm of current gain.
+    log_gain[i] = m_log_current_gain;
     // Update the current gain.
     // Note: the original algorithm multiplied the abs(input)
     //       with the current gain (exp(log_current_gain))
     //       then took the logarithm value, but the sequence can be
     //       realigned as taking the log value of the abs(input)
     //       then add the log_current_gain.
-    float log_amplitude =
-        std::log(Utility::estimate_magnitude(input)) + m_log_current_gain;
+    float log_amplitude = std::log(Utility::estimate_magnitude(samples_in[i])) +
+                          m_log_current_gain;
     float error = (m_log_reference - log_amplitude) * m_rate;
     float new_log_current_gain = m_log_current_gain + error;
     if (new_log_current_gain > m_log_max_gain) {
@@ -64,6 +68,12 @@ void IfAgc::process(const IQSampleVector &samples_in,
     }
     m_log_current_gain = new_log_current_gain;
   }
+  // Compute output based on the saved logarithm of current gain.
+  // NOTE: DO NOT USE volk_32f_expfast_32f() here
+  //       because the calculation error is audible on AM mode!
+  volk_32f_exp_32f(gain.data(), log_gain.data(), n);
+  volk_32fc_32f_multiply_32fc(samples_out.data(), samples_in.data(),
+                              gain.data(), n);
 }
 
 // end

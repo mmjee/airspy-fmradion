@@ -51,7 +51,11 @@ public:
   void initialize_coefficients();
 
   // Process IQ samples and return filtered IQ samples.
-  void process(const IQSampleVector &samples_in, IQSampleVector &samples_out);
+  // Return true if the processing is successful
+  // (or the input length is zero);
+  // Return false if the processing fails
+  // (i.e., internal values contains infinite values (NaN, inf, etc)).
+  bool process(const IQSampleVector &samples_in, IQSampleVector &samples_out);
 
   // Obtain the latest error value.
   const double get_error() const { return m_error; }
@@ -76,7 +80,7 @@ private:
   const unsigned int m_stages;
   const unsigned int m_index_reference_point;
   const unsigned int m_filter_order;
-  const double m_mu;
+  float m_mu;
   MfCoeffVector m_coeff;
   MfCoeffVector m_state;
   double m_error;

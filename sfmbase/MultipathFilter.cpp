@@ -101,12 +101,31 @@ inline IQSample MultipathFilter::single_process(const IQSample filter_input) {
 
 // Update coefficients by complex LMS/CMA method.
 inline void MultipathFilter::update_coeff(const IQSample result) {
+
+  volk::vector<float> state_mag_sq;
+  state_mag_sq.resize(m_filter_order);
+  float state_mag_sq_sum;
+
   // Input instant envelope
   const double env = std::norm(result);
   // error = [desired signal] - [filter output]
   const double error = if_target_level - env;
+
+  // Normalized LMS (NLMS) processing
+  // First calculate the square norm of input data (m_state) by
+  // * Compute the square magnitude of each element of m_state
+  // * Then add the square magnitude for all the elements
+  volk_32fc_magnitude_squared_32f(state_mag_sq.data(), m_state.data(),
+                                  m_filter_order);
+  volk_32f_accumulator_s32f(&state_mag_sq_sum, state_mag_sq.data(),
+                            m_filter_order);
+  // fprintf(stderr, "state_mag_sq_sum = %.9g\n", state_mag_sq_sum);
+
+  // Obtain the step size (dymanically computed)
+  m_mu = alpha / state_mag_sq_sum;
+
   // Calculate correlation vector
-  const double factor = error * m_mu;
+  const float factor = error * m_mu;
   const MfCoeff factor_times_result =
       MfCoeff(factor * result.real(), factor * result.imag());
   // Recalculate all coefficients
@@ -128,11 +147,12 @@ inline void MultipathFilter::update_coeff(const IQSample result) {
 }
 
 // Process block samples.
-void MultipathFilter::process(const IQSampleVector &samples_in,
+bool MultipathFilter::process(const IQSampleVector &samples_in,
                               IQSampleVector &samples_out) {
   unsigned int n = samples_in.size();
   if (n == 0) {
-    return;
+    // Do nothing, return as successful
+    return true;
   }
   samples_out.resize(n);
 
@@ -142,13 +162,29 @@ void MultipathFilter::process(const IQSampleVector &samples_in,
   const unsigned int filter_interval = 0x03;
   for (unsigned int i = 0; i < n; i++) {
     IQSample output = single_process(samples_in[i]);
+    // Note well: -ffast-math DISABLES NaN processing (-menable-no-nans)
+    // so DO NOT specify -ffast-math!
+    // Check if output real/imag are finite
+    if (!std::isfinite(output.real()) || !std::isfinite(output.imag())) {
+      return false;
+    }
     samples_out[i] = output;
     if ((i & filter_interval) == 0) {
       // Update filter coefficients here
       update_coeff(output);
+      // Check if error value is finite
+      if (!std::isfinite(m_error)) {
+        return false;
+      }
+      // Check if real/imag of the reference point are finite
+      if (!std::isfinite(m_coeff[m_index_reference_point].real()) ||
+          !std::isfinite(m_coeff[m_index_reference_point].imag())) {
+        return false;
+      }
     }
   }
   assert(n == samples_out.size());
+  return true;
 }
 
 // end

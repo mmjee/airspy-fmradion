@@ -96,6 +96,8 @@ private:
 class FmDecoder {
 public:
   // Static constants.
+  // IF sampling rate.
+  static constexpr double sample_rate_if = 384000;
   // Output sampling rate.
   static constexpr double sample_rate_pcm = 48000;
   // Full scale carrier frequency deviation (75 kHz for broadcast FM)
@@ -110,7 +112,7 @@ public:
   /**
    * Construct FM decoder.
    *
-   * sample_rate_demod :: Demodulator IQ sample rate.
+   * fmfilter_coeff    :: IQSample filter coefficients.
    * stereo            :: True to enable stereo decoding.
    * deemphasis        :: Time constant of de-emphasis filter in microseconds
    *                      (50 us for broadcast FM, 0 to disable de-emphasis).
@@ -120,7 +122,7 @@ public:
    * multipath_stages  :: Set >0 to enable multipath filter
    *                   :: (LMS adaptive filter stage number)
    */
-  FmDecoder(double sample_rate_demod, bool stereo, double deemphasis,
+  FmDecoder(IQSampleCoeff &fmfilter_coeff, bool stereo, double deemphasis,
             bool pilot_shift, unsigned int multipath_stages);
   /**
    * Process IQ samples and return audio samples.
@@ -146,9 +148,6 @@ public:
 
   // Return RMS IF level.
   float get_if_rms() const { return m_if_rms; }
-
-  // Return if multipath filter is skipped.
-  bool multipath_filter_skipped() const { return m_skip_multipath_filter; }
 
   /** Return PPS events from the most recently processed block. */
   std::vector<PilotPhaseLock::PpsEvent> get_pps_events() const {
@@ -186,10 +185,9 @@ private:
                                  SampleVector &audio);
 
   // Data members.
-  const double m_sample_rate_fmdemod;
+  const IQSampleCoeff &m_fmfilter_coeff;
   const bool m_pilot_shift;
   const bool m_enable_multipath_filter;
-  bool m_skip_multipath_filter;
   unsigned int m_wait_multipath_blocks;
   const unsigned int m_multipath_stages;
   const bool m_stereo_enabled;
@@ -198,8 +196,9 @@ private:
   float m_baseband_level;
   float m_if_rms;
 
+  IQSampleVector m_samples_in_iffiltered;
   IQSampleVector m_samples_in_after_agc;
-  IQSampleVector m_samples_in_filtered;
+  IQSampleVector m_samples_in_multipathfiltered;
   IQSampleDecodedVector m_buf_decoded;
   SampleVector m_buf_baseband;
   SampleVector m_buf_baseband_raw;
@@ -209,6 +208,7 @@ private:
   SampleVector m_buf_stereo_firstout;
   SampleVector m_buf_stereo;
 
+  LowPassFilterFirIQ m_fmfilter;
   AudioResampler m_audioresampler_mono;
   AudioResampler m_audioresampler_stereo;
   LowPassFilterFirAudio m_pilotcut_mono;

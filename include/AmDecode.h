@@ -31,13 +31,35 @@
 #include "IfResampler.h"
 #include "SoftFM.h"
 
+// Fine tuner which shifts the frequency of an IQ signal by a fixed offset.
+class FineTuner {
+public:
+  /**
+   * Construct fine tuner.
+   *
+   * table_size :: Size of internal sin/cos tables, determines the resolution
+   *               of the frequency shift.
+   *
+   * freq_shift :: Frequency shift. Signal frequency will be shifted by
+   *               (sample_rate * freq_shift / table_size).
+   */
+  FineTuner(unsigned const int table_size, const int freq_shift);
+
+  /** Process samples. */
+  void process(const IQSampleVector &samples_in, IQSampleVector &samples_out);
+
+private:
+  unsigned int m_index;
+  IQSampleVector m_table;
+};
+
 /** Complete decoder for FM broadcast signal. */
 class AmDecoder {
 public:
   // Static constants.
   static constexpr double sample_rate_pcm = 48000;
-  static constexpr double internal_rate_pcm = 12000;
-  static constexpr double cw_rate_pcm = 2000;
+  static constexpr double internal_rate_pcm = 48000;
+  static constexpr double cw_rate_pcm = 12000;
   // Half bandwidth of audio signal in Hz (4.5kHz for AM)
   static constexpr double bandwidth_pcm = 4500;
   // Deemphasis constant in microseconds.
@@ -46,12 +68,10 @@ public:
   /**
    * Construct AM decoder.
    *
-   * sample_rate_demod :: Demodulator IQ sample rate.
    * amfilter_coeff    :: IQSample Filter Coefficients.
    * mode              :: ModType for decoding mode.
    */
-  AmDecoder(double sample_rate_demod, IQSampleCoeff &amfilter_coeff,
-            const ModType mode);
+  AmDecoder(IQSampleCoeff &amfilter_coeff, const ModType mode);
 
   // Process IQ samples and return audio samples.
   void process(const IQSampleVector &samples_in, SampleVector &audio);
@@ -77,7 +97,6 @@ private:
                              IQSampleDecodedVector &samples_out);
 
   // Data members.
-  const double m_sample_rate_demod;
   const IQSampleCoeff &m_amfilter_coeff;
   const ModType m_mode;
   float m_baseband_mean;
@@ -88,7 +107,6 @@ private:
   IQSampleVector m_buf_filtered2;
   IQSampleVector m_buf_filtered2a;
   IQSampleVector m_buf_filtered2b;
-  IQSampleVector m_buf_filtered2c;
   IQSampleVector m_buf_filtered3;
   IQSampleVector m_buf_filtered4;
   IQSampleDecodedVector m_buf_decoded;
@@ -97,20 +115,19 @@ private:
   SampleVector m_buf_baseband;
   SampleVector m_buf_mono;
 
-  AudioResampler m_audioresampler;
-  IfResampler m_ifresampler;
   LowPassFilterFirIQ m_amfilter;
+  LowPassFilterFirIQ m_cwfilter;
+  LowPassFilterFirIQ m_ssbfilter;
   FourthConverterIQ m_upshifter;
   FourthConverterIQ m_downshifter;
   LowPassFilterFirIQ m_ssbshiftfilter;
-  IfResampler m_cw_downsampler;
-  IfResampler m_cw_upsampler;
-  FourthConverterIQ m_upshifter_cw;
-  LowPassFilterFirIQ m_cwshiftfilter;
   HighPassFilterIir m_dcblock;
   LowPassFilterRC m_deemph;
   AfAgc m_afagc;
   IfAgc m_ifagc;
+  FineTuner m_finetuner;
+  IfResampler m_cw_downsampler;
+  IfResampler m_cw_upsampler;
 };
 
 #endif

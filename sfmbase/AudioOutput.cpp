@@ -26,10 +26,6 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-#ifdef USE_ALSA
-#include <alsa/asoundlib.h>
-#endif // USE_ALSA
-
 #include "AudioOutput.h"
 #include "SoftFM.h"
 
@@ -106,6 +102,8 @@ RawAudioOutput::RawAudioOutput(const std::string &filename) {
       return;
     }
   }
+
+  m_device_name = "RawAudioOutput";
 }
 
 // Destructor.
@@ -165,6 +163,7 @@ WavAudioOutput::WavAudioOutput(const std::string &filename,
     m_error = "can not write to '" + filename + "' (" + strerror(errno) + ")";
     m_zombie = true;
   }
+  m_device_name = "WavAudioOutput";
 }
 
 // Destructor.
@@ -270,81 +269,105 @@ template <typename T> void WavAudioOutput::set_value(uint8_t *ptr, T value) {
   }
 }
 
-#ifdef USE_ALSA
+// Class PortAudioOutput
 
-/* ****************  class AlsaAudioOutput  **************** */
-
-// Construct ALSA output stream.
-AlsaAudioOutput::AlsaAudioOutput(const std::string &devname,
+// Construct PortAudio output stream.
+PortAudioOutput::PortAudioOutput(const PaDeviceIndex device_index,
                                  unsigned int samplerate, bool stereo) {
-  m_pcm = nullptr;
   m_nchannels = stereo ? 2 : 1;
 
-  int r = snd_pcm_open(&m_pcm, devname.c_str(), SND_PCM_STREAM_PLAYBACK,
-                       SND_PCM_NONBLOCK);
-
-  if (r < 0) {
-    m_error =
-        "can not open PCM device '" + devname + "' (" + strerror(-r) + ")";
-    m_zombie = true;
+  m_paerror = Pa_Initialize();
+  if (m_paerror != paNoError) {
+    add_paerror("Pa_Initialize()");
     return;
   }
 
-  snd_pcm_nonblock(m_pcm, 0);
+  if (device_index == -1) {
+    m_outputparams.device = Pa_GetDefaultOutputDevice();
+  } else {
+    PaDeviceIndex index = static_cast<PaDeviceIndex>(device_index);
+    if (index >= Pa_GetDeviceCount()) {
+      add_paerror("Device number out of range");
+      return;
+    }
+    m_outputparams.device = index;
+  }
+  if (m_outputparams.device == paNoDevice) {
+    add_paerror("No default output device");
+    return;
+  }
+  m_device_name = Pa_GetDeviceInfo(m_outputparams.device)->name;
 
-  r = snd_pcm_set_params(m_pcm, SND_PCM_FORMAT_S16_LE,
-                         SND_PCM_ACCESS_RW_INTERLEAVED, m_nchannels, samplerate,
-                         1,       // allow soft resampling
-                         500000); // latency in us
+  m_outputparams.channelCount = m_nchannels;
+  m_outputparams.sampleFormat = paFloat32;
+  m_outputparams.suggestedLatency =
+      Pa_GetDeviceInfo(m_outputparams.device)->defaultHighOutputLatency;
+  m_outputparams.hostApiSpecificStreamInfo = NULL;
 
-  if (r < 0) {
-    m_error = "can not set PCM parameters (";
-    m_error += strerror(-r);
-    m_error += ")";
-    m_zombie = true;
+  m_paerror =
+      Pa_OpenStream(&m_stream,
+                    NULL, // no input
+                    &m_outputparams, samplerate, paFramesPerBufferUnspecified,
+                    paClipOff, // no clipping
+                    NULL,      // no callback, blocking API
+                    NULL       // no callback userData
+      );
+  if (m_paerror != paNoError) {
+    add_paerror("Pa_OpenStream()");
+    return;
+  }
+
+  m_paerror = Pa_StartStream(m_stream);
+  if (m_paerror != paNoError) {
+    add_paerror("Pa_StartStream()");
+    return;
   }
 }
 
 // Destructor.
-AlsaAudioOutput::~AlsaAudioOutput() {
-  // Close device.
-  if (m_pcm != nullptr) {
-    snd_pcm_close(m_pcm);
+PortAudioOutput::~PortAudioOutput() {
+  m_paerror = Pa_StopStream(m_stream);
+  if (m_paerror != paNoError) {
+    add_paerror("Pa_StopStream()");
+    return;
   }
+  Pa_Terminate();
 }
 
 // Write audio data.
-bool AlsaAudioOutput::write(const SampleVector &samples) {
+bool PortAudioOutput::write(const SampleVector &samples) {
   if (m_zombie) {
     return false;
   }
 
+  unsigned long sample_size = samples.size();
   // Convert samples to bytes.
-  samplesToInt16(samples, m_bytebuf);
+  samplesToFloat32(samples, m_bytebuf);
 
-  // Write data.
-  unsigned int p = 0;
-  unsigned int n = samples.size() / m_nchannels;
-  unsigned int framesize = 2 * m_nchannels;
-  while (p < n) {
-
-    int k = snd_pcm_writei(m_pcm, m_bytebuf.data() + p * framesize, n - p);
-    if (k < 0) {
-      m_error = "write failed (";
-      m_error += strerror(errno);
-      m_error += ")";
-      // After an underrun, ALSA keeps returning error codes until we
-      // explicitly fix the stream.
-      snd_pcm_recover(m_pcm, k, 0);
-      return false;
-    } else {
-      p += k;
-    }
-  }
-
-  return true;
+  m_paerror =
+      Pa_WriteStream(m_stream, m_bytebuf.data(), sample_size / m_nchannels);
+  if (m_paerror == paNoError) {
+    return true;
+  } else if (m_paerror == paOutputUnderflowed) {
+    // This error is benign
+    // fprintf(stderr, "paOutputUnderflowed\n");
+    return true;
+  } else
+    add_paerror("Pa_WriteStream()");
+  return false;
 }
 
-#endif // USE_ALSA
+// Terminate PortAudio
+// then add PortAudio error string to m_error and set m_zombie flag.
+void PortAudioOutput::add_paerror(const std::string &premsg) {
+  Pa_Terminate();
+  m_error += premsg;
+  m_error += ": PortAudio error: (number: ";
+  m_error += std::to_string(m_paerror);
+  m_error += " message: ";
+  m_error += Pa_GetErrorText(m_paerror);
+  m_error += ")";
+  m_zombie = true;
+}
 
 /* end */
